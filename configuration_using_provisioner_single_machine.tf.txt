@@ -1,0 +1,148 @@
+/*
+* Demonstrate use of provisioner 'remote-exec' to execute a command
+* on a new VM instance.
+*/
+
+/*
+* NOTE: It is very poor practice to hardcode sensitive information, use a create variable or a other file to use
+*This is just for testing
+*/
+variable "admin_username" {
+  default = "user1"
+}
+
+variable "admin_password" {
+  default = "awesomePotatos@12345"
+}
+
+
+# You'll usually want to set this to a region near you.
+variable "location" {
+  default = "East Asia"
+}
+
+# Configure the provider.
+provider "azurerm" {
+  version = "~>1.31"
+}
+
+# Create a new resource group
+resource "azurerm_resource_group" "rg" {
+    name     = "mill_rg_aus"
+    location = var.location
+tags = {
+    Environment = "mill_rg"
+    Team = "prod"
+}
+}
+
+#create virtual network
+resource "azurerm_virtual_network" "vnet"{
+    name = "mill_vnet_si"
+    location = var.location
+    address_space = ["10.0.0.0/16"]
+    resource_group_name = azurerm_resource_group.rg.name
+}
+
+#create subnet
+resource azurerm_subnet "subnet" {
+    name = "mill_subnet"
+    resource_group_name =azurerm_resource_group.rg.name 
+    virtual_network_name = azurerm_virtual_network.vnet.name
+    address_prefix = "10.0.1.0/24"
+}
+
+#create Public IP
+resource "azurerm_public_ip" "publicIP"{
+    name = "mill_vm1_ip"
+    location = "East Asia"
+    resource_group_name = azurerm_resource_group.rg.name
+    allocation_method = "Static"
+}
+
+#create network security group and rule
+
+resource "azurerm_network_security_group" "nsg" {
+    name = "nsg1"
+    location = var.location
+    resource_group_name = azurerm_resource_group.rg.name
+    security_rule {
+        name = "SSH"
+        priority = "1001"
+        direction = "Inbound"
+        access = "Allow"
+        protocol = "Tcp"
+        source_port_range = "*"
+        destination_port_range = "22"
+        source_address_prefix  = "*"
+        destination_address_prefix = "*"
+    }
+}
+
+#create network interface 
+resource "azurerm_network_interface" "nic"{
+    name = "nic1"
+    location = var.location
+    resource_group_name = azurerm_resource_group.rg.name
+    network_security_group_id = azurerm_network_security_group.nsg.id 
+    ip_configuration {
+        name = "nic_config1"
+        subnet_id = azurerm_subnet.subnet.id
+        private_ip_address_allocation = "dynamic"
+        public_ip_address_id = azurerm_public_ip.publicIP.id
+    }
+}
+
+#create a virtual machine
+
+resource "azurerm_virtual_machine" "mill_vm" {
+    name = "millvm1"
+    location = var.location
+    resource_group_name = azurerm_resource_group.rg.name
+    network_interface_ids = [azurerm_network_interface.nic.id]
+    vm_size = "Standard_DS1_v2"
+    storage_os_disk {
+        name = "os_disk_store"
+        caching = "ReadWrite"
+        create_option = "FromImage"
+        managed_disk_type = "Premium_LRS"
+    }
+    storage_image_reference {
+        publisher = "Canonical"
+        offer = "UbuntuServer"
+        sku = "16.04.0-LTS"
+        version = "latest"
+    }
+    os_profile {
+        computer_name = "millvm1"
+        admin_username = var.admin_password
+        admin_password = var.admin_password
+    }
+    os_profile_linux_config{
+        disable_password_authentication = false 
+    }
+    provisioner "file" {
+        connection {
+            host = azurerm_public_ip.publicIP.ip_address
+            type = "ssh"
+            user = var.admin_username
+            password = var.admin_password
+        }
+        #This file is in the curent location and has the text
+        source  = "provi.txt"
+        destination = "newtext_file.txt"
+    }
+    provisioner "remote-exec" {
+        connection {
+            host = azurerm_public_ip.publicIP.ip_address
+            type = "ssh"
+            user = var.admin_username
+            password = var.admin_password
+        }
+        inline = [
+            "ls -la",
+            "cat newtext_file.txt",
+        ]
+    }
+}
+
